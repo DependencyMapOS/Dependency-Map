@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { apiFetchOptional } from "@/lib/api";
+import { isValidUuid } from "@/lib/uuid";
 
 export default async function RepoPage({
   params,
@@ -7,7 +8,13 @@ export default async function RepoPage({
   params: Promise<{ repoId: string }>;
 }) {
   const { repoId } = await params;
-  const latest = await apiFetchOptional(`/v1/repos/${repoId}/analyses/latest`);
+  const latest = isValidUuid(repoId)
+    ? await apiFetchOptional(`/v1/repos/${repoId}/analyses/latest`)
+    : {
+        ok: false as const,
+        error:
+          "The API expects a repository UUID in the URL (from your database), not a short name like “demo”. Replace this segment after you have linked a repo.",
+      };
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12">

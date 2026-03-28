@@ -24,7 +24,8 @@ Apply migrations in the Supabase SQL editor or via `supabase db push` when using
 ```bash
 cd backend
 uv sync --extra dev
-uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# --reload-dir app avoids watching .venv (otherwise uv sync / IDE triggers endless reloads)
+uv run uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000
 ```
 
 **Frontend**

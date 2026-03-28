@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { apiFetchOptional } from "@/lib/api";
+import { isValidUuid } from "@/lib/uuid";
 
 export default async function AnalysisPage({
   params,
@@ -7,9 +8,16 @@ export default async function AnalysisPage({
   params: Promise<{ repoId: string; analysisId: string }>;
 }) {
   const { repoId, analysisId } = await params;
-  const res = await apiFetchOptional(
-    `/v1/repos/${repoId}/analyses/${analysisId}`,
-  );
+  const res =
+    isValidUuid(repoId) && isValidUuid(analysisId)
+      ? await apiFetchOptional(
+          `/v1/repos/${repoId}/analyses/${analysisId}`,
+        )
+      : {
+          ok: false as const,
+          error:
+            "Repository and analysis IDs in the URL must be UUIDs. Sample paths like /repos/demo are placeholders only.",
+        };
 
   const summary =
     res.ok &&

@@ -50,7 +50,7 @@ export default async function DashboardPage() {
           Repos (sample org route)
         </Link>
         <Link href="/repos/demo" className="font-medium underline">
-          Repo detail (sample)
+          Repo detail (placeholder slug — API needs a UUID)
         </Link>
       </nav>
     </main>
