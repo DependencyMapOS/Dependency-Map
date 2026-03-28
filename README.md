@@ -19,7 +19,7 @@ Apply migrations in the Supabase SQL editor or via `supabase db push` when using
 
 ## Run locally
 
-**API**
+**Backend**
 
 ```bash
 cd backend
@@ -27,7 +27,7 @@ uv sync --extra dev
 uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Web**
+**Frontend**
 
 ```bash
 npm install
