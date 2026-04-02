@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     supabase_jwt_secret: str = ""
     github_webhook_secret: str = ""
+    github_app_id: str = ""
+    github_app_private_key: str = ""
+    redis_url: str = "redis://localhost:6379/0"
+    use_celery: bool = False
     api_key_pepper: str = "change-me-in-production"
     cors_origins: str = "http://localhost:3000"
 

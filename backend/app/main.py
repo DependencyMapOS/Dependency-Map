@@ -2,10 +2,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from supabase import Client
 
 from app.config import settings
-from app.deps import verify_supabase_jwt
-from app.routers import analyses, health, webhooks
+from app.deps import get_supabase_admin, verify_supabase_jwt
+from app.limiter import limiter
+from app.routers import analyses, api_keys, health, orgs, webhooks
 
 
 @asynccontextmanager
@@ -18,6 +22,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,13 +36,31 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(webhooks.router)
 app.include_router(analyses.router)
+app.include_router(orgs.router)
+app.include_router(api_keys.router)
 
 
 @app.get("/v1/dashboard")
-def dashboard(user: dict = Depends(verify_supabase_jwt)) -> dict:
+def dashboard(
+    user: dict = Depends(verify_supabase_jwt),
+    sb: Client = Depends(get_supabase_admin),
+) -> dict:
+    uid = str(user["sub"])
+    memberships = (
+        sb.table("organization_members")
+        .select("org_id, role")
+        .eq("user_id", uid)
+        .execute()
+    )
+    rows = memberships.data or []
+    org_ids = [r["org_id"] for r in rows]
+    organizations: list[dict] = []
+    if org_ids:
+        ores = sb.table("organizations").select("id, name, slug").in_("id", org_ids).execute()
+        organizations = ores.data or []
     return {
-        "user_id": user["sub"],
+        "user_id": uid,
         "email": user.get("email"),
-        "organizations": [],
-        "message": "Wire organizations query to Supabase in Phase 1+.",
+        "organizations": organizations,
+        "memberships": rows,
     }

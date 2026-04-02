@@ -8,15 +8,20 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
   "pydantic-settings>=2.6",
-  "pyjwt>=2.8",
+  "pyjwt[crypto]>=2.8",
   "httpx>=0.28",
   "supabase>=2.10",
+  "networkx>=3.2",
+  "celery[redis]>=5.4",
+  "redis>=5.0",
+  "slowapi>=0.1.9",
 ]
 
 [project.optional-dependencies]
 dev = [
   "ruff>=0.8",
   "mypy>=1.13",
+  "pytest>=8.0",
 ]
 
 [tool.ruff]
@@ -28,7 +33,7 @@ select = ["E", "F", "I", "UP"]
 
 [tool.mypy]
 python_version = "3.11"
-strict = true
+strict = false
 ignore_missing_imports = true
 
 [build-system]

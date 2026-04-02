@@ -1,10 +1,11 @@
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
-from app.deps import get_supabase_admin, parse_uuid, verify_supabase_jwt
-from app.worker import tasks
+from app.deps import get_supabase_admin, parse_uuid, verify_user_or_api_key
+from app.limiter import limiter
+from app.worker.tasks import schedule_analysis_job
 
 router = APIRouter(prefix="/v1/repos", tags=["analyses"])
 
@@ -15,12 +16,39 @@ class AnalyzeBody(BaseModel):
     head_sha: str | None = None
 
 
+def _assert_repo_org_access(
+    actor: dict[str, Any],
+    repo_org_id: str,
+    supabase: Any,
+) -> None:
+    if actor.get("auth") == "api_key":
+        if actor.get("org_id") != repo_org_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="API key scope mismatch",
+            )
+        return
+    uid = str(actor["sub"])
+    m = (
+        supabase.table("organization_members")
+        .select("role")
+        .eq("org_id", repo_org_id)
+        .eq("user_id", uid)
+        .limit(1)
+        .execute()
+    )
+    if not m.data:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not an org member")
+
+
 @router.post("/{repo_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit("60/minute")
 def trigger_analyze(
+    request: Request,
     repo_id: str,
     body: AnalyzeBody,
     background: BackgroundTasks,
-    _user: dict = Depends(verify_supabase_jwt),
+    actor: dict[str, Any] = Depends(verify_user_or_api_key),
     supabase=Depends(get_supabase_admin),
 ) -> dict[str, Any]:
     rid = parse_uuid(repo_id)
@@ -29,6 +57,17 @@ def trigger_analyze(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Provide pr_number or both base_sha and head_sha",
         )
+    rres = (
+        supabase.table("repositories")
+        .select("org_id")
+        .eq("id", str(rid))
+        .limit(1)
+        .execute()
+    )
+    if not rres.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    repo_org = str(rres.data[0]["org_id"])
+    _assert_repo_org_access(actor, repo_org, supabase)
     row = {
         "repo_id": str(rid),
         "pr_number": body.pr_number,
@@ -44,7 +83,7 @@ def trigger_analyze(
             detail="Failed to create analysis",
         )
     analysis_id = res.data[0]["id"]
-    background.add_task(tasks.run_analysis_job, str(analysis_id))
+    schedule_analysis_job(str(analysis_id), background)
     return {"analysis_id": analysis_id, "status": "pending"}
 
 
@@ -52,11 +91,21 @@ def trigger_analyze(
 def get_analysis(
     repo_id: str,
     analysis_id: str,
-    _user: dict = Depends(verify_supabase_jwt),
+    actor: dict[str, Any] = Depends(verify_user_or_api_key),
     supabase=Depends(get_supabase_admin),
 ) -> dict[str, Any]:
     rid = parse_uuid(repo_id)
     aid = parse_uuid(analysis_id)
+    rres = (
+        supabase.table("repositories")
+        .select("org_id")
+        .eq("id", str(rid))
+        .limit(1)
+        .execute()
+    )
+    if not rres.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    _assert_repo_org_access(actor, str(rres.data[0]["org_id"]), supabase)
     res = (
         supabase.table("pr_analyses")
         .select("*")
@@ -73,10 +122,20 @@ def get_analysis(
 @router.get("/{repo_id}/analyses/latest")
 def get_latest_analysis(
     repo_id: str,
-    _user: dict = Depends(verify_supabase_jwt),
+    actor: dict[str, Any] = Depends(verify_user_or_api_key),
     supabase=Depends(get_supabase_admin),
 ) -> dict[str, Any]:
     rid = parse_uuid(repo_id)
+    rres = (
+        supabase.table("repositories")
+        .select("org_id")
+        .eq("id", str(rid))
+        .limit(1)
+        .execute()
+    )
+    if not rres.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    _assert_repo_org_access(actor, str(rres.data[0]["org_id"]), supabase)
     res = (
         supabase.table("pr_analyses")
         .select("*")
