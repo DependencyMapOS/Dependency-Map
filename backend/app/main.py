@@ -9,7 +9,7 @@ from supabase import Client
 from app.config import settings
 from app.deps import get_supabase_admin, verify_supabase_jwt
 from app.limiter import limiter
-from app.routers import analyses, api_keys, health, orgs, webhooks
+from app.routers import analyses, api_keys, branches, cross_repo, feedback, health, orgs, webhooks
 
 
 @asynccontextmanager
@@ -36,6 +36,9 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(webhooks.router)
 app.include_router(analyses.router)
+app.include_router(branches.router)
+app.include_router(cross_repo.router)
+app.include_router(feedback.router)
 app.include_router(orgs.router)
 app.include_router(api_keys.router)
 

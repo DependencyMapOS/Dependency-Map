@@ -1,64 +1,64 @@
 ---
 name: Cross-Repo Branch Pipeline
-overview: "Extend the backend with a cross-repo and cross-branch analysis pipeline (org graph, cross-repo blast, drift), plus Greptile-inspired ML layers (AST, embeddings, GNN, RLHF). The plan includes explicit degraded-mode paths (ML cold-start, Celery/GitHub fan-out, super-graph memory bounds), schema_version contract for summary_json, atomic cross_repo_edges refresh, and configurable RLHF thresholds."
+overview: Extend the backend with a cross-repo and cross-branch analysis pipeline (org graph, cross-repo blast, drift), plus Greptile-inspired ML layers (AST, embeddings, GNN, RLHF). The plan includes explicit degraded-mode paths (ML cold-start, Celery/GitHub fan-out, super-graph memory bounds), schema_version contract for summary_json, atomic cross_repo_edges refresh, and configurable RLHF thresholds.
 todos:
   - id: db-migration
     content: "Migration cross_repo_branches: repo_packages, cross_repo_edges (+ staging or versioned swap), dependency_snapshots.branch, branch_drift_signals base_sha/head_sha/drift_type, org_settings jsonb; RLS"
-    status: pending
+    status: completed
   - id: package-resolver
     content: "New service package_resolver.py: extract published packages from package.json/workspaces, resolve cross-repo edges by matching bare import specifiers to repo_packages"
-    status: pending
+    status: completed
   - id: branch-monitor
     content: "New service branch_monitor.py: compare_branch_graphs (diff + overlap score), compute_drift_signals, detect_merge_risk"
-    status: pending
+    status: completed
   - id: extend-blast-radius
     content: "Add compute_cross_repo_blast_radius to blast_radius.py: build namespaced super-graph, reverse BFS across repo boundaries, group impacts by repo"
-    status: pending
+    status: completed
   - id: extend-github-client
     content: Add list_installation_repos, list_branches, get_branch_head_sha to github_client.py
-    status: pending
+    status: completed
   - id: cross-repo-tasks
     content: "New worker/cross_repo_tasks.py: snapshot_repo_branch, build_org_graph, compute_branch_drift Celery tasks; enhance run_analysis_job with cross-repo blast radius step"
-    status: pending
+    status: completed
   - id: celery-beat
     content: "Celery Beat: per-org jitter, batched repo snapshot enqueue (no 200 fan-out), rate-limited GitHub, separate queues optional"
-    status: pending
+    status: completed
   - id: api-cross-repo
     content: "New router cross_repo.py: org graph build, cross-repo edge queries, consumer/dependency lookups"
-    status: pending
+    status: completed
   - id: api-branches
     content: "New router branches.py: branch snapshot trigger, drift comparison, drift signals, branch graph retrieval"
-    status: pending
+    status: completed
   - id: webhooks-push
     content: "Extend webhooks.py: handle push events (snapshot + org graph rebuild), branch create/delete events"
-    status: pending
+    status: completed
   - id: tests
     content: "New tests: test_package_resolver, test_branch_monitor, test_cross_repo_blast; update CI"
-    status: pending
+    status: completed
   - id: production-safeguards
     content: "Implement degraded modes: ML cold-start named fallback uniform BFS (blast_radius_uniform_fallback); Celery beat fan-out caps + per-org stagger + GitHub rate limiter; super-graph MAX_CONSUMER_REPOS + top-N; summary_json schema_version contract + optional backfill job; cross_repo_edges staging swap; drift signals persist resolved base_sha/head_sha; org-configurable RLHF min_pairs"
-    status: pending
+    status: completed
   - id: tree-sitter-parser
     content: "Replace regex graph_builder with tree-sitter AST parser: fine-grained nodes (functions, classes, variables, interfaces), edges (calls, imports, inheritance, type refs), support TS/JS via tree-sitter-typescript/javascript"
-    status: pending
+    status: completed
   - id: embedding-pipeline
     content: "New service embedding_engine.py: generate semantic embeddings per AST node via OpenAI text-embedding-3-small (or local CodeBERT fallback), batch processing, caching in node_embeddings table"
-    status: pending
+    status: completed
   - id: gnn-model
     content: "New service gnn_engine.py: PyTorch Geometric GAT+GraphSAGE hybrid model, training loop on code graphs, inference for enriched node embeddings, model serialization and loading"
-    status: pending
+    status: completed
   - id: vector-store
-    content: "Enable pgvector in Supabase, create node_embeddings table with vector column, hybrid retrieval service (vector similarity + keyword + graph walk), context assembly for analysis"
-    status: pending
+    content: Enable pgvector in Supabase, create node_embeddings table with vector column, hybrid retrieval service (vector similarity + keyword + graph walk), context assembly for analysis
+    status: completed
   - id: rlhf-feedback
     content: "RLHF: review_feedback + API; per-org feedback_min_pairs_for_update; partial updates for low-volume orgs; org-scoped weights"
-    status: pending
+    status: completed
   - id: ml-db-migration
     content: "New migration for ML tables: node_embeddings (with pgvector), ast_graph_snapshots, review_feedback, model_artifacts; extend dependency_snapshots with ast_graph_json"
-    status: pending
+    status: completed
   - id: ml-tests
-    content: "Tests for tree-sitter parser, embedding pipeline, GNN forward pass, vector retrieval, feedback collection"
-    status: pending
+    content: Tests for tree-sitter parser, embedding pipeline, GNN forward pass, vector retrieval, feedback collection
+    status: completed
 isProject: false
 ---
 

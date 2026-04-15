@@ -3,6 +3,16 @@ from pathlib import Path
 from app.services.graph_builder import build_dependency_graph, diff_graph_edges
 
 
+def test_build_graph_package_import(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "a.ts").write_text('import React from "react";\n', encoding="utf-8")
+    g = build_dependency_graph(tmp_path)
+    assert any(
+        e.get("source") == "a.ts" and str(e.get("target", "")) == "package:react"
+        for e in g["edges"]
+    )
+
+
 def test_build_graph_minimal_repo(tmp_path: Path) -> None:
     (tmp_path / "package.json").write_text(
         '{"dependencies": {"react": "^18.0.0"}}',

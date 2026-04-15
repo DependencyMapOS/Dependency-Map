@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     api_key_pepper: str = "change-me-in-production"
     cors_origins: str = "http://localhost:3000"
 
+    # Cross-repo / worker tuning (org.settings JSON can override per-org in code paths)
+    max_consumer_repos: int = 20
+    snapshot_batch_size: int = 5
+    drift_check_max_branches_per_repo: int = 8
+    super_graph_max_nodes: int = 50_000
+    github_max_retries: int = 5
+    openai_api_key: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

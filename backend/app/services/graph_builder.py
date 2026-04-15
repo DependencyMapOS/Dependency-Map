@@ -1,4 +1,4 @@
-"""Static TS/JS import graph (regex MVP)."""
+"""TS/JS import graph: tree-sitter module resolution with regex fallback."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+
+from app.services.tree_sitter_languages import parser_for_suffix
 
 FROM_IMPORT_RE = re.compile(
     r"""import\s+(?:type\s+)?(?:(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)(?:\s*,\s*(?:\{[^}]*\}|\*\s+as\s+\w+|\w+))*\s+from\s+)?["']([^"']+)["']"""
@@ -68,6 +70,85 @@ def _extract_specs(content: str) -> list[str]:
     return specs
 
 
+def _decode_string_node(node: Any, source: bytes) -> str | None:
+    if node.type != "string":
+        return None
+    raw = source[node.start_byte : node.end_byte].decode("utf-8", errors="ignore").strip()
+    if len(raw) >= 2 and raw[0] in "'\"" and raw[-1] == raw[0]:
+        return raw[1:-1]
+    return raw or None
+
+
+def _module_strings_from_tree(root_node: Any, source: bytes) -> list[str]:
+    """Module specifiers from import/export and require()/import() (tree-sitter)."""
+    specs: list[str] = []
+    stack: list[Any] = [root_node]
+    while stack:
+        node = stack.pop()
+        ntype = node.type
+        if ntype == "import_statement":
+            s2: list[Any] = [node]
+            while s2:
+                n2 = s2.pop()
+                if n2.type == "string":
+                    t = _decode_string_node(n2, source)
+                    if t is not None:
+                        specs.append(t)
+                s2.extend(n2.children)
+        elif ntype == "export_statement":
+            chunk = source[node.start_byte : node.end_byte]
+            if b" from " in chunk or b"\nfrom " in chunk:
+                s2 = [node]
+                while s2:
+                    n2 = s2.pop()
+                    if n2.type == "string":
+                        t = _decode_string_node(n2, source)
+                        if t is not None:
+                            specs.append(t)
+                    s2.extend(n2.children)
+        elif ntype == "call_expression" and node.children:
+            fn = node.children[0]
+            is_require = (
+                fn.type == "identifier" and source[fn.start_byte : fn.end_byte] == b"require"
+            )
+            is_dyn_import = fn.type == "import"
+            if is_require or is_dyn_import:
+                for ch in node.children:
+                    if ch.type != "arguments":
+                        continue
+                    astack = [ch]
+                    while astack:
+                        an = astack.pop()
+                        if an.type == "string":
+                            t = _decode_string_node(an, source)
+                            if t:
+                                specs.append(t)
+                        astack.extend(an.children)
+        stack.extend(node.children)
+    return specs
+
+
+def _extract_specs_tree_sitter(root: Path, rel: str) -> list[str] | None:
+    path = root / rel
+    parser = parser_for_suffix(path.suffix)
+    if parser is None:
+        return None
+    try:
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        return _module_strings_from_tree(tree.root_node, source)
+    except Exception:
+        return None
+
+
+def _extract_specs_for_file(root: Path, rel: str) -> list[str]:
+    ts = _extract_specs_tree_sitter(root, rel)
+    if ts is not None:
+        return ts
+    content = (root / rel).read_text(encoding="utf-8", errors="ignore")
+    return _extract_specs(content)
+
+
 def build_dependency_graph(repo_root: Path) -> dict[str, Any]:
     """Build directed edge list: source file -> target file or package:spec."""
     root = repo_root.resolve()
@@ -95,8 +176,7 @@ def build_dependency_graph(repo_root: Path) -> dict[str, Any]:
                 )
 
     for rel in files:
-        content = (root / rel).read_text(encoding="utf-8", errors="ignore")
-        for spec in _extract_specs(content):
+        for spec in _extract_specs_for_file(root, rel):
             tgt = _resolve_relative(root, rel, spec)
             if tgt and tgt in file_set:
                 edges.append({"source": rel, "target": tgt, "type": "import"})

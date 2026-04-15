@@ -14,6 +14,7 @@ class AnalyzeBody(BaseModel):
     pr_number: int | None = None
     base_sha: str | None = None
     head_sha: str | None = None
+    cross_repo: bool = False
 
 
 def _assert_repo_org_access(
@@ -73,6 +74,7 @@ def trigger_analyze(
         "pr_number": body.pr_number,
         "base_sha": body.base_sha,
         "head_sha": body.head_sha,
+        "cross_repo": body.cross_repo,
         "status": "pending",
         "summary_json": {},
     }
