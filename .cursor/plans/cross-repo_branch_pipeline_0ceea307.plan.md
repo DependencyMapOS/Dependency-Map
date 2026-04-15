@@ -1,9 +1,9 @@
 ---
 name: Cross-Repo Branch Pipeline
-overview: "Extend the backend with a cross-repo and cross-branch analysis pipeline: org-wide dependency graphs that link repos via published packages, cross-repo blast radius that spans multiple repositories, branch drift monitoring that detects structural divergence, and new API endpoints + worker tasks + database tables to power it all."
+overview: "Extend the backend with a cross-repo and cross-branch analysis pipeline (org graph, cross-repo blast, drift), plus Greptile-inspired ML layers (AST, embeddings, GNN, RLHF). The plan includes explicit degraded-mode paths (ML cold-start, Celery/GitHub fan-out, super-graph memory bounds), schema_version contract for summary_json, atomic cross_repo_edges refresh, and configurable RLHF thresholds."
 todos:
   - id: db-migration
-    content: "Create migration 20250415000000_cross_repo_branches.sql: repo_packages, cross_repo_edges tables; extend dependency_snapshots with branch column; extend branch_drift_signals with new columns; RLS policies"
+    content: "Migration cross_repo_branches: repo_packages, cross_repo_edges (+ staging or versioned swap), dependency_snapshots.branch, branch_drift_signals base_sha/head_sha/drift_type, org_settings jsonb; RLS"
     status: pending
   - id: package-resolver
     content: "New service package_resolver.py: extract published packages from package.json/workspaces, resolve cross-repo edges by matching bare import specifiers to repo_packages"
@@ -21,7 +21,7 @@ todos:
     content: "New worker/cross_repo_tasks.py: snapshot_repo_branch, build_org_graph, compute_branch_drift Celery tasks; enhance run_analysis_job with cross-repo blast radius step"
     status: pending
   - id: celery-beat
-    content: Add Celery Beat schedule to celery_app.py for periodic repo snapshots and drift checks
+    content: "Celery Beat: per-org jitter, batched repo snapshot enqueue (no 200 fan-out), rate-limited GitHub, separate queues optional"
     status: pending
   - id: api-cross-repo
     content: "New router cross_repo.py: org graph build, cross-repo edge queries, consumer/dependency lookups"
@@ -34,6 +34,9 @@ todos:
     status: pending
   - id: tests
     content: "New tests: test_package_resolver, test_branch_monitor, test_cross_repo_blast; update CI"
+    status: pending
+  - id: production-safeguards
+    content: "Implement degraded modes: ML cold-start named fallback uniform BFS (blast_radius_uniform_fallback); Celery beat fan-out caps + per-org stagger + GitHub rate limiter; super-graph MAX_CONSUMER_REPOS + top-N; summary_json schema_version contract + optional backfill job; cross_repo_edges staging swap; drift signals persist resolved base_sha/head_sha; org-configurable RLHF min_pairs"
     status: pending
   - id: tree-sitter-parser
     content: "Replace regex graph_builder with tree-sitter AST parser: fine-grained nodes (functions, classes, variables, interfaces), edges (calls, imports, inheritance, type refs), support TS/JS via tree-sitter-typescript/javascript"
@@ -48,7 +51,7 @@ todos:
     content: "Enable pgvector in Supabase, create node_embeddings table with vector column, hybrid retrieval service (vector similarity + keyword + graph walk), context assembly for analysis"
     status: pending
   - id: rlhf-feedback
-    content: "Feedback collection: review_feedback table, API endpoints for thumbs-up/down on review comments, preference pair storage, periodic scoring model update from feedback signals"
+    content: "RLHF: review_feedback + API; per-org feedback_min_pairs_for_update; partial updates for low-volume orgs; org-scoped weights"
     status: pending
   - id: ml-db-migration
     content: "New migration for ML tables: node_embeddings (with pgvector), ast_graph_snapshots, review_feedback, model_artifacts; extend dependency_snapshots with ast_graph_json"
@@ -111,7 +114,11 @@ flowchart TB
 
 ## Pipeline Architecture (in-depth)
 
-The system has **three independent pipelines** that share services and storage. Each is triggered differently and produces different outputs, but they feed into each other to create org-wide intelligence.
+The system has **four independent pipelines** (Snapshot, Org Graph, PR Analysis, Drift) that share services and storage. Each is triggered differently and produces different outputs, but they feed into each other to create org-wide intelligence.
+
+**What is strong:** Pipeline decomposition is clean; explicit dependency ordering (Snapshot first, then Org Graph, then PR Analysis with optional cross-repo, Drift on snapshots) is implementable. Stage-by-stage I/O tables remove ambiguity. Pipeline 3’s optional cross-repo step degrades gracefully to single-repo when edges are missing — good product behavior.
+
+**See also:** [Production safeguards and degraded modes](#production-safeguards-and-degraded-modes) (ML cold-start, Celery/GitHub scale, super-graph bounds, schema migration, atomic org graph refresh, drift audit SHAs, RLHF config).
 
 ---
 
@@ -279,9 +286,13 @@ flowchart TD
     S7I["cross_edges from Stage 6"]
   end
 
-  subgraph S7 ["STAGE 7: Persist Cross-Repo Edges"]
-    S7A["delete stale cross_repo_edges for org"]
-    S7B["batch insert new cross_repo_edges"]
+  subgraph S7 ["STAGE 7: Persist Cross-Repo Edges (atomic swap)"]
+    S7A["INSERT INTO cross_repo_edges_staging ..."]
+    S7B["BEGIN transaction"]
+    S7C["TRUNCATE or DELETE cross_repo_edges WHERE org_id"]
+    S7D["INSERT INTO cross_repo_edges SELECT * FROM staging"]
+    S7E["COMMIT"]
+    S7Alt["Preferred: single-table swap via version column or RENAME (see safeguards)"]
   end
 
   subgraph S7out ["STAGE 7 OUTPUT"]
@@ -303,10 +314,12 @@ flowchart TD
   - Process: for each repo's graph edges, find `package:X` targets -> look up X in `package_registry` -> if X maps to another repo, emit a cross-repo edge
   - Out: `cross_edges: [{ source_repo_id, target_repo_id, source_path, target_package, edge_type }]`
 
-- **Stage 7 -- Persist**
+- **Stage 7 -- Persist (no empty window)**
   - In: `cross_edges`, `org_id`
-  - Process: delete existing `cross_repo_edges` for org -> batch insert new edges
-  - Out: rows in `cross_repo_edges`
+  - Process: **do not** `DELETE` then insert in separate transactions (concurrent PR analysis would read an empty graph). Use one of:
+    - **Staging + swap in one transaction:** `INSERT` into `cross_repo_edges_staging` (or temp table) -> `DELETE FROM cross_repo_edges WHERE org_id = ?` -> `INSERT INTO cross_repo_edges SELECT ... FROM staging` -> `COMMIT`; or
+    - **Version column:** write new rows with `graph_version = v+1`, then `DELETE WHERE org_id AND graph_version < v` in the same transaction; readers use `WHERE graph_version = latest`.
+  - Out: rows in `cross_repo_edges` (always consistent for concurrent readers within transaction isolation)
 
 ---
 
@@ -350,10 +363,11 @@ flowchart TD
     S9I4["changed_files from Stage 8"]
   end
 
-  subgraph S9 ["STAGE 9: Cross-Repo Blast Radius (conditional)"]
+  subgraph S9 ["STAGE 9: Cross-Repo Blast Radius (conditional, bounded)"]
     S9A["query cross_repo_edges WHERE target_repo_id = this repo"]
     S9B["identify consumer repos: repos that import from this repo"]
-    S9C["load dependency_snapshots for each consumer repo"]
+    S9B2["cap consumers: top-N by edge weight or blast relevance (config MAX_CONSUMER_REPOS)"]
+    S9C["load dependency_snapshots for each consumer repo (bounded)"]
     S9D["build super-graph: namespace nodes as repo_full_name:file_path"]
     S9E["inject cross-repo edges into super-graph"]
     S9F["reverse BFS from changed files across repo boundaries"]
@@ -401,12 +415,13 @@ flowchart TD
   - In: `repo_id`, `org_id`, `head_graph_json`, `changed_files`, `single_repo_summary`
   - Process:
     1. Query `cross_repo_edges WHERE target_repo_id = this_repo` -- find repos that depend on this one
-    2. Load `dependency_snapshots` for each consumer repo (latest default-branch snapshot)
-    3. Build NetworkX super-graph: each node namespaced as `{repo_full_name}:{file_path}`
-    4. Add cross-repo edges connecting consumer files to this repo's files (through package imports)
-    5. Reverse BFS from `{this_repo}:{changed_file}` seeds, traversing both intra-repo and cross-repo edges
-    6. Group impacted nodes by repo, compute per-repo depth-weighted score
-  - Out: `cross_repo_impacts: [{ repo_id, repo_name, impacted_files: [], blast_score: int }]`, `aggregate_cross_repo_score: int`
+    2. **Bound consumer set:** sort consumers by cross-repo edge count / relevance; take **top N** (default e.g. `MAX_CONSUMER_REPOS=20`, org-configurable). Document as **known limitation:** beyond N, impacts may be incomplete; log `cross_repo_truncated: true` in `summary_json` when applied.
+    3. Load `dependency_snapshots` only for selected consumer repos (latest default-branch snapshot per repo)
+    4. Build NetworkX super-graph: each node namespaced as `{repo_full_name}:{file_path}`; **abort or chunk** if estimated edge+node count exceeds a safety threshold (optional hard cap with same truncation flag)
+    5. Add cross-repo edges connecting consumer files to this repo's files (through package imports)
+    6. Reverse BFS from `{this_repo}:{changed_file}` seeds, traversing both intra-repo and cross-repo edges
+    7. Group impacted nodes by repo, compute per-repo depth-weighted score
+  - Out: `cross_repo_impacts: [{ repo_id, repo_name, impacted_files: [], blast_score: int }]`, `aggregate_cross_repo_score: int`, optional `cross_repo_truncated: bool`
 
 - **Stage 10 -- Merge and Persist**
   - In: `single_repo_summary`, `cross_repo_impacts`
@@ -435,7 +450,8 @@ flowchart TD
       "blast_score": 28
     }
   ],
-  "aggregate_cross_repo_score": 28
+  "aggregate_cross_repo_score": 28,
+  "cross_repo_truncated": false
 }
 ```
 
@@ -510,8 +526,8 @@ flowchart TD
 
 - **Stage 11 -- Load Branch Snapshots**
   - In: `repo_id`, `branch_a`, `branch_b`
-  - Process: query latest `dependency_snapshots` for each branch
-  - Out: `graph_a`, `graph_b`, `sha_a`, `sha_b`
+  - Process: query latest `dependency_snapshots` for each branch (`ORDER BY created_at DESC LIMIT 1` per branch)
+  - Out: `graph_a`, `graph_b`, **`resolved_sha_a`**, **`resolved_sha_b`** (commit SHAs actually used — required for auditability when multiple snapshots exist per branch)
 
 - **Stage 12 -- Diff and Score**
   - In: `graph_a`, `graph_b`
@@ -519,9 +535,9 @@ flowchart TD
   - Out: `drift_signal: { overlap_score: float, added_edges: [], removed_edges: [], drift_type: str, conflicting_files: [], merge_risk: "low"|"medium"|"high", risk_summary: str }`
 
 - **Stage 13 -- Persist**
-  - In: `drift_signal`, `repo_id`, `branch_a`, `branch_b`
-  - Process: insert `branch_drift_signals` -> upsert `risk_hotspots` for conflicting files
-  - Out: rows in `branch_drift_signals`, `risk_hotspots`
+  - In: `drift_signal`, `repo_id`, `branch_a`, `branch_b`, **`resolved_sha_a`**, **`resolved_sha_b`**
+  - Process: insert `branch_drift_signals` with **`base_sha` = resolved SHA for branch_a** and **`head_sha` = resolved SHA for branch_b** (not just branch names) -> upsert `risk_hotspots` for conflicting files
+  - Out: rows in `branch_drift_signals`, `risk_hotspots`; each drift row is reproducible from stored SHAs
 
 **`branch_drift_signals.signal_json` schema:**
 
@@ -598,10 +614,84 @@ flowchart TD
 ```
 
 **Dependency order:**
+
+```mermaid
+flowchart LR
+  P1[Pipeline1_Snapshot]
+  P2[Pipeline2_OrgGraph]
+  P3[Pipeline3_PRAnalysis]
+  P4[Pipeline4_Drift]
+  P1 --> P2
+  P1 --> P4
+  P1 --> P3
+  P2 --> P3
+```
+
 - Pipeline 1 must run first (produces snapshots and package data)
 - Pipeline 2 depends on Pipeline 1 outputs (reads snapshots + packages to build cross-repo edges)
-- Pipeline 3 depends on Pipeline 2 outputs for cross-repo analysis (reads cross_repo_edges), but falls back to single-repo-only if no edges exist
+- Pipeline 3 depends on Pipeline 2 outputs for cross-repo analysis (reads `cross_repo_edges`), but falls back to single-repo-only if no edges exist (or when truncated — see safeguards)
 - Pipeline 4 depends on Pipeline 1 outputs (reads branch snapshots to diff)
+
+---
+
+## Production safeguards and degraded modes
+
+These are **named behaviors** to implement before production, not implicit TODOs.
+
+### ML cold-start (Pipeline 3 + ML Layers 3–5)
+
+**Problem:** GNN attention weights are meaningless until a model is trained and loaded for the org; embeddings may be partial on first run.
+
+**Required code path — `ml_degraded_mode` (or equivalent flag in `summary_json.ml_metadata`):**
+
+1. On each analysis, **`load_org_model(org_id)`** returns either a loaded checkpoint or `None`.
+2. If **no model artifact** exists for the org, or inference fails, call **`blast_radius_uniform_fallback(...)`** — a **named function** wrapping the **existing** reverse BFS / uniform edge weights (current [blast_radius.py](backend/app/services/blast_radius.py) behavior). Do not silently mix uninitialized attention weights with production scoring.
+3. Set `summary_json.ml_metadata.inference_mode` to `"gnn"` | `"uniform_fallback"` | `"skipped"` so dashboards and API clients can filter.
+4. Optional: global **pretrained** checkpoint (not org-specific) for “warm start” before org-specific training — still document whether attention is generic or org-tuned.
+
+### Celery Beat and GitHub API fan-out (Pipeline 1–2)
+
+**Problem:** “Snapshot all repos every 6 hours” for an org with hundreds of repos fires hundreds of tasks at once → GitHub **secondary rate limits** and broker overload.
+
+**Mitigations (specify in worker config and task design):**
+
+- **Stagger:** Beat schedule uses **per-org jitter** (hash `org_id` to offset minutes) so not all orgs align on the same second.
+- **Chunking:** Orchestrator task `enqueue_org_snapshots(org_id)` pushes **batches of K repos** (e.g. K=5) with `countdown` or `eta` spacing between batches — not 200 parallel `snapshot_repo_branch` tasks.
+- **Concurrency caps:** Celery `worker_prefetch_multiplier=1`, task **rate limits** per queue (`snapshot`, `github_read`), and a **semaphore** or Redis counter for max concurrent GitHub tarball fetches per installation.
+- **GitHub client:** Central **token-bucket** or **Retry-After** respect on 403/429 (already partially needed for compare/tarball).
+- **Document:** Worst-case “full org refresh” time vs repo count; optional admin flag to **pause** scheduled snapshots for an org.
+
+### Super-graph memory (Pipeline 3 Stage 9)
+
+**Problem:** Loading full `dependency_snapshots` for every consumer repo can reach **GB-scale** graphs for large orgs.
+
+**Mitigations:** Already in Stage 9: **top-N consumer repos** (`MAX_CONSUMER_REPOS`, org-configurable), optional **hard cap** on total nodes/edges before BFS; set **`cross_repo_truncated: true`** in `summary_json` and log. Document as **known limitation** when truncation applies.
+
+### `summary_json` schema versions (v1 / v2 / v3)
+
+**Problem:** Existing rows may have `schema_version: 1` or missing key; new code emits v2/v3.
+
+**Contract:**
+
+- Every new analysis **must** set **`schema_version`** explicitly (`1`, `2`, or `3`).
+- **API consumers and frontend** must branch on `schema_version` (or use a small adapter) when reading `impacted_modules` (list of strings vs list of objects in v3), `cross_repo_impacts`, `ml_metadata`, etc.
+- **Optional backfill job:** one-off Celery task or SQL migration that sets `schema_version = 1` where null and does **not** rewrite legacy payloads unless product requires it — prefer **read-time** compatibility over destructive migration.
+
+### Cross-repo edges refresh (Pipeline 2 Stage 7)
+
+**Problem:** Full `DELETE` then `INSERT` leaves a window where concurrent readers see **no** cross-repo edges.
+
+**Mitigation:** Staging + **single transaction** swap, or **versioned rows** — see Stage 7 table above.
+
+### RLHF feedback threshold (Layer 6)
+
+**Problem:** Fixed “50 preference pairs” may **never** trigger for low-volume orgs.
+
+**Mitigations:**
+
+- Store **`feedback_min_pairs_for_update`** per org (e.g. column on `organizations` or `org_settings` jsonb), default **10**, minimum **1**.
+- **Time-based partial updates:** weekly job applies small weight nudges when `pairs < min` but `pairs >= 1` (document variance / regularization).
+- Emit **`last_feedback_training_at`** and **`feedback_pairs_accumulated`** in org ML metadata for supportability.
 
 ---
 
@@ -945,7 +1035,7 @@ flowchart TD
 - Process:
   1. **Vector search**: `SELECT * FROM node_embeddings ORDER BY embedding <=> query_embedding LIMIT top_k` (pgvector cosine distance)
   2. **Keyword search**: `SELECT * FROM node_embeddings WHERE search_text @@ plainto_tsquery(query_text) LIMIT top_k`
-  3. **Graph walk**: BFS from query node along edges where `attention_weight > 0.3`, up to depth 3
+  3. **Graph walk**: BFS from query node along edges where `attention_weight > 0.3`, up to depth 3. **Cold-start:** if attention weights are absent, treat all edges as weight `1.0` for traversal (or skip graph-walk branch and rely on vector + keyword only) — do not use uninitialized GAT outputs.
   4. **Reciprocal Rank Fusion**: `score(d) = SUM(1 / (k + rank_in_method))` across all three methods
   5. Return top K after fusion
 - Out: `relevant_context: list[{ node_id, similarity_score, code_snippet, file, line, retrieval_reason }]`
@@ -963,7 +1053,7 @@ flowchart TD
 
 ### Layer 5: Intelligent Scoring (Attention-Weighted Analysis)
 
-Replaces the current uniform reverse-BFS with attention-weighted traversal. Edges with higher GAT attention propagate more blast radius. GNN-enriched embeddings improve risk prediction.
+When a **trained GNN and attention weights** exist for the org, this layer uses attention-weighted reverse BFS (higher-attention edges propagate more blast radius). When they **do not** — **ML cold-start** — the implementation **must** take the explicit fallback path **`blast_radius_uniform_fallback`** (same semantics as today’s uniform reverse BFS on file- or AST-level graphs), set `ml_metadata.inference_mode = "uniform_fallback"`, and **must not** apply fake or zero-initialized attention as if it were trained.
 
 ```mermaid
 flowchart TD
@@ -975,21 +1065,23 @@ flowchart TD
   end
 
   subgraph L5process ["PROCESS: Intelligent blast radius"]
+    L5P0["branch: model_loaded AND attention_valid"]
     L5P1["Seed: changed AST nodes in the diff"]
-    L5P2["Weighted reverse BFS: propagate risk along edges, scaled by attention_weight"]
-    L5P3["Risk accumulation: deeper nodes get discounted, low-attention edges get discounted more"]
-    L5P4["Cross-repo propagation: follow cross_repo_edges with their own attention weights"]
-    L5P5["Anomaly detection: flag nodes whose enriched embedding shifted significantly between base and head"]
-    L5P6["Reviewer ranking: cosine similarity between changed-node embeddings and developer-owned-code embeddings"]
+    L5P2["Weighted reverse BFS OR blast_radius_uniform_fallback"]
+    L5P3["Risk accumulation with decay"]
+    L5P4["Cross-repo propagation when applicable"]
+    L5P5["Embedding drift anomalies base vs head"]
+    L5P6["Reviewer ranking by embedding similarity"]
   end
 
   subgraph L5output [OUTPUT]
-    L5O1["blast_radius_v3: { score, impacted_nodes: [{id, risk, depth, attention}], cross_repo_impacts }"]
-    L5O2["risk_anomalies: nodes with high embedding drift"]
-    L5O3["ranked_reviewers: [{ handle, relevance_score, owned_impacted_files }]"]
+    L5O1["blast_radius_v3: { score, impacted_nodes, cross_repo_impacts }"]
+    L5O2["risk_anomalies"]
+    L5O3["ranked_reviewers"]
   end
 
-  L5input --> L5process --> L5output
+  L5input --> L5P0
+  L5P0 --> L5P1 --> L5P2 --> L5P3 --> L5P4 --> L5P5 --> L5P6 --> L5output
 ```
 
 **Attention-weighted BFS (replaces uniform BFS):**
@@ -1053,7 +1145,7 @@ flowchart TD
   subgraph L6process ["PROCESS: Feedback collection + model update"]
     L6P1["Store feedback in review_feedback table"]
     L6P2["Accumulate preference pairs: (addressed_comment, dismissed_comment)"]
-    L6P3["When pairs >= 50: trigger scoring weight update"]
+    L6P3["When pairs >= org.feedback_min_pairs_for_update (or time-based partial update): trigger scoring weight update"]
     L6P4["Compute edge-type importance weights per org"]
     L6P5["Adjust attention thresholds and decay factors"]
     L6P6["Serialize updated weights to model_artifacts"]
@@ -1076,6 +1168,7 @@ flowchart TD
   1. Insert into `review_feedback` table
   2. Periodically (Celery Beat, daily) aggregate feedback per org
   3. Compute preference signals: comments that were `addressed` are "good" predictions; `dismissed` or `thumbs_down` are "bad"
+  3b. **Threshold:** use **`feedback_min_pairs_for_update`** per org (default **10**, min **1**; not a fixed global 50). For low-volume orgs, optionally apply **smaller nudges** on a schedule when `pairs >= 1` but below min (see [Production safeguards](#production-safeguards-and-degraded-modes)).
   4. Update `org_scoring_weights`:
      - Increase weight for edge types whose traversal produced `addressed` comments
      - Decrease weight for edge types that produced `dismissed` comments
@@ -1137,12 +1230,16 @@ sequenceDiagram
 
   Note over W: Stage 4 - GNN Encode (Layer 3)
   W->>DB: load model weights from model_artifacts
-  W->>GNN: forward pass (head_ast_graph + features)
-  GNN-->>W: enriched_embeddings (256-dim) + attention_weights
+  alt model present and valid
+    W->>GNN: forward pass (head_ast_graph + features)
+    GNN-->>W: enriched_embeddings (256-dim) + attention_weights
+  else cold-start or load failure
+    W->>W: blast_radius_uniform_fallback (no fake attention)
+  end
 
   Note over W: Stage 5 - Intelligent Scoring (Layer 5)
   W->>DB: load org_scoring_weights
-  W->>W: attention-weighted reverse BFS from changed nodes
+  W->>W: attention-weighted reverse BFS from changed nodes OR uniform fallback
   W->>W: embedding drift detection (base vs head)
   W->>W: reviewer ranking by embedding similarity
 
@@ -1199,10 +1296,13 @@ sequenceDiagram
     "embedding_model": "text-embedding-3-small",
     "node_count": 387,
     "edge_count": 1204,
-    "inference_ms": 340
+    "inference_ms": 340,
+    "inference_mode": "gnn"
   }
 }
 ```
+
+**Note:** When `inference_mode` is `"uniform_fallback"`, omit or zero-out attention fields in `impacted_modules` where not applicable; root `schema_version` remains `3`.
 
 ---
 
@@ -1266,7 +1366,8 @@ New file: `supabase/migrations/20250415000000_cross_repo_branches.sql`
 **Extend existing tables:**
 
 - **`dependency_snapshots`**: add `branch text not null default 'main'` column; alter unique constraint to `(repo_id, branch, commit_sha)` — enables per-branch graph caching
-- **`branch_drift_signals`**: add `base_sha text`, `head_sha text`, `drift_type text` (structural | file-level | dependency) columns for richer signals
+- **`branch_drift_signals`**: add `base_sha text`, `head_sha text`, `drift_type text` (structural | file-level | dependency) columns — **`base_sha` / `head_sha` must store the resolved commit SHAs** from the snapshots used in the comparison (audit trail), not inferred only from branch names alone
+- **`organizations`** (or new **`org_settings`**): optional `settings jsonb` default `{}` with keys such as `max_consumer_repos` (int), `feedback_min_pairs_for_update` (int), `snapshot_batch_size` (int) — avoids hard-coding limits
 
 **RLS policies**: select for org members (same pattern as existing tables).
 
@@ -1352,10 +1453,14 @@ After the current per-repo blast radius, add:
 
 ### 3e. Celery Beat schedule (periodic)
 
-In [backend/app/celery_app.py](backend/app/celery_app.py), add `beat_schedule`:
+In [backend/app/celery_app.py](backend/app/celery_app.py), add `beat_schedule` with **fan-out controls** (see [Production safeguards](#production-safeguards-and-degraded-modes)):
 
-- `snapshot-all-repos`: every 6 hours, snapshots default branch of all org repos
-- `drift-check`: every 6 hours, compares active branches within each repo
+- **`enqueue_org_snapshot_round`**: every 6 hours (with **per-org jitter** so beats do not align globally), **does not** spawn N tasks for N repos at once. Instead:
+  - One task per org (or per batch of orgs) that **chained** subtasks enqueue **batches of K repos** (e.g. K=5) with delays between batches.
+- **`drift-check`**: same pattern — bounded concurrency per repo/org; no unbounded parallel `compare` API calls.
+- **GitHub:** all scheduled tasks go through **rate-limited** GitHub client helpers; respect `Retry-After` on 403/429.
+
+Optional: separate **low-priority queues** for snapshot vs interactive PR analysis so user-facing jobs never starve.
 
 ---
 
