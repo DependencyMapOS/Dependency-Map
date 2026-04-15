@@ -69,6 +69,7 @@ def embed_ast_nodes(
                     "commit_sha": commit_sha or None,
                     "embedding": vec,
                     "content_hash": ch,
+                    "search_text": body[:2000],
                 },
             )
         if rows:

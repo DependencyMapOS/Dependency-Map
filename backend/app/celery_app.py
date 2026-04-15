@@ -46,6 +46,10 @@ celery_app.conf.beat_schedule = {
         "task": "dm.enqueue_all_org_drift_checks",
         "schedule": crontab(minute=45, hour="*/12"),
     },
+    "nightly-ml-training": {
+        "task": "dm.enqueue_all_org_ml_training",
+        "schedule": crontab(minute=0, hour=2),
+    },
 }
 
 
@@ -143,3 +147,19 @@ def run_ml_train_task(org_id: str) -> None:
     from app.worker.ml_tasks import train_org_model
 
     train_org_model(org_id)
+
+
+@celery_app.task(name="dm.enqueue_all_org_ml_training")
+def enqueue_all_org_ml_training_task() -> None:
+    from supabase import create_client
+
+    from app.worker.cross_repo_tasks import _org_jitter_seconds
+
+    if not settings.supabase_url or not settings.supabase_service_role_key:
+        return
+    sb = create_client(settings.supabase_url, settings.supabase_service_role_key)
+    ores = sb.table("organizations").select("id").execute()
+    for row in ores.data or []:
+        oid = str(row["id"])
+        countdown = _org_jitter_seconds(oid + ":ml", modulo=900)
+        run_ml_train_task.apply_async(args=[oid], countdown=countdown)

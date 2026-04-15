@@ -7,19 +7,80 @@ Monorepo for the Dependency Map OS MVP: **Next.js** (`frontend/`), **FastAPI** (
 - Node 20+
 - [uv](https://docs.astral.sh/uv/) (Python 3.11+)
 - A Supabase project (Auth + Postgres)
+- Optional: [Docker](https://docs.docker.com/get-docker/) (Redis, API, Celery workers, and Beat via Compose)
+- Optional: [Supabase CLI](https://supabase.com/docs/guides/cli) for applying migrations from the repo
 
-## Environment
+## Setup guide
 
-All variables are documented in **`.env.example`** at the repo root.
+### 1. Clone and install dependencies
 
-- **Frontend:** `NEXT_PUBLIC_*` vars must be available to Next.js. **`frontend/next.config.ts` loads the repo root `.env`** via `loadEnvConfig`, so one root `.env` with the Frontend block is enough; you can also use **`frontend/.env.local`** for overrides. Use the anon key only; never the service role in the browser.
-- **Backend:** Copy the **Backend** section into **`backend/.env`**.
+From the repository root:
 
-Apply migrations in the Supabase SQL editor or via `supabase db push` when using the Supabase CLI.
+```bash
+git clone <your-fork-or-repo-url>
+cd Dependency-Map
+npm install
+```
 
-## Run locally
+Install the frontend workspace packages (workspace is `frontend/`):
 
-**Backend**
+```bash
+npm install -w frontend
+```
+
+Install the Python API and dev tools:
+
+```bash
+cd backend
+uv sync --extra dev
+```
+
+Optional ML stack (PyTorch Geometric, GNN training, CodeBERT fallback). Use this if you run GNN training or want the full test suite including PyG-backed tests:
+
+```bash
+cd backend
+uv sync --extra dev --extra ml
+```
+
+### 2. Environment variables
+
+All variables are documented in **`.env.example`** at the repo root. Copy it and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+- **Frontend:** `NEXT_PUBLIC_*` variables must be available to Next.js. **`frontend/next.config.ts` loads the repo root `.env`** via `loadEnvConfig`, so a single root `.env` with the Frontend block is enough. You can also use **`frontend/.env.local`** for overrides. Use the **anon** key only in the browser; never the service role.
+- **Backend:** FastAPI loads **`../.env`** (repo root) then **`backend/.env`** (see `backend/app/config.py`). A single **root `.env`** containing both Frontend and Backend blocks is usually sufficient. For server-only overrides, use **`backend/.env`**.
+
+Add any optional keys your deployment needs (for example `OPENAI_API_KEY` for embeddings and hybrid search, if you use those features).
+
+### 3. Supabase database
+
+1. Create a project in the [Supabase dashboard](https://supabase.com/dashboard).
+2. Enable extensions and run migrations in order:
+   - Use the Supabase SQL editor, **or**
+   - `supabase link` then `supabase db push` if you use the CLI.
+3. Apply all files under `supabase/migrations/` in filename (timestamp) order.
+
+This provisions tables, RLS policies, `pgvector` (where defined), and RPCs used by the API.
+
+### 4. GitHub App (optional)
+
+For repository analysis, webhooks, and tarball fetch, create a [GitHub App](https://docs.github.com/en/apps/creating-github-apps) and set `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET` in `.env`. You can leave these empty for UI-only local development against Supabase Auth.
+
+### 5. Redis and Celery (optional for full pipeline)
+
+- **Local Redis:** install Redis and point `REDIS_URL` at it (for example `redis://localhost:6379/0`), or use Docker only for Redis: `docker compose up -d redis`.
+- Set **`USE_CELERY=true`** when you run the API with a Celery worker (see [Startup guide](#startup-guide)).
+
+---
+
+## Startup guide
+
+### Option A: Local development (API + Next.js, no Docker for the app)
+
+**Terminal 1 — Backend**
 
 ```bash
 cd backend
@@ -28,14 +89,62 @@ uv sync --extra dev
 uv run uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000
 ```
 
-**Frontend**
+With Celery locally: start Redis, set `USE_CELERY=true` in `.env`, then in another terminal run:
+
+```bash
+cd backend
+uv run celery -A app.celery_app:celery_app worker -l info -Q celery,snapshot
+```
+
+For ML training tasks and Beat schedules, also run workers for the `ml` queue and Celery Beat (see Option B commands).
+
+**Terminal 2 — Frontend**
 
 ```bash
 npm install
 cd frontend && npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Protected routes: `/dashboard`, `/orgs/...`, `/repos/...`.
+Open [http://localhost:3000](http://localhost:3000). Protected routes include `/dashboard`, `/orgs/...`, and `/repos/...`.
+
+**If the Next.js build fails with odd errors (for example missing `/_document`):** delete `frontend/.next` and run `npm run build -w frontend` again. On Windows, syncing the repo under OneDrive can occasionally interfere with the Next cache; moving the clone outside synced folders can help.
+
+### Option B: Docker Compose (API + Redis + workers + Beat)
+
+From the **repo root** (where `docker-compose.yml` lives), ensure `.env` exists and includes at least Supabase and app settings from `.env.example`.
+
+```bash
+docker compose up --build
+```
+
+This starts:
+
+- **redis** — broker/backend for Celery
+- **api** — FastAPI on port **8000** (`USE_CELERY=true`, `REDIS_URL` points at the Compose Redis service)
+- **worker** — Celery worker for `celery` and `snapshot` queues
+- **worker-ml** — Celery worker for the `ml` queue (training jobs)
+- **beat** — Celery Beat for scheduled tasks
+
+Point `NEXT_PUBLIC_API_URL` at `http://127.0.0.1:8000` and run the frontend locally as in Option A, or add a frontend service later if you containerize it.
+
+### Quick reference
+
+| Service        | Default URL / port        |
+|----------------|---------------------------|
+| Next.js (dev)  | http://localhost:3000     |
+| FastAPI        | http://127.0.0.1:8000     |
+| Redis (Compose)| localhost:6379            |
+
+---
+
+## Environment (reference)
+
+See **`.env.example`** for the full list. Summary:
+
+- **Frontend:** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SITE_URL`
+- **Backend:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, `CORS_ORIGINS`, `REDIS_URL`, `USE_CELERY`, GitHub App vars, `API_KEY_PEPPER`
+
+Apply migrations in the Supabase SQL editor or via `supabase db push` when using the Supabase CLI.
 
 ## CI
 

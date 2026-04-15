@@ -435,7 +435,12 @@ flowchart TD
   "schema_version": 2,
   "changed_files": ["src/api.ts", "src/utils.ts"],
   "changed_dependency_edges": [
-    {"source": "src/api.ts", "target": "src/utils.ts", "type": "import", "change": "added"}
+    {
+      "source": "src/api.ts",
+      "target": "src/utils.ts",
+      "type": "import",
+      "change": "added"
+    }
   ],
   "impacted_modules": ["src/api.ts", "src/utils.ts", "src/handler.ts"],
   "blast_radius_score": 42,
@@ -545,7 +550,11 @@ flowchart TD
 {
   "overlap_score": 0.82,
   "added_edges": [
-    {"source": "src/new-module.ts", "target": "src/utils.ts", "type": "import"}
+    {
+      "source": "src/new-module.ts",
+      "target": "src/utils.ts",
+      "type": "import"
+    }
   ],
   "removed_edges": [],
   "drift_type": "structural",
@@ -1041,6 +1050,7 @@ flowchart TD
 - Out: `relevant_context: list[{ node_id, similarity_score, code_snippet, file, line, retrieval_reason }]`
 
 **Use cases for retrieval:**
+
 - Blast radius: "given this changed function, what else in the org is semantically related?"
 - Reviewer routing: "who owns code similar to this change?"
 - Risk prediction: "what past changes to similar code caused issues?"
@@ -1168,7 +1178,7 @@ flowchart TD
   1. Insert into `review_feedback` table
   2. Periodically (Celery Beat, daily) aggregate feedback per org
   3. Compute preference signals: comments that were `addressed` are "good" predictions; `dismissed` or `thumbs_down` are "bad"
-  3b. **Threshold:** use **`feedback_min_pairs_for_update`** per org (default **10**, min **1**; not a fixed global 50). For low-volume orgs, optionally apply **smaller nudges** on a schedule when `pairs >= 1` but below min (see [Production safeguards](#production-safeguards-and-degraded-modes)).
+     3b. **Threshold:** use **`feedback_min_pairs_for_update`** per org (default **10**, min **1**; not a fixed global 50). For low-volume orgs, optionally apply **smaller nudges** on a schedule when `pairs >= 1` but below min (see [Production safeguards](#production-safeguards-and-degraded-modes)).
   4. Update `org_scoring_weights`:
      - Increase weight for edge types whose traversal produced `addressed` comments
      - Decrease weight for edge types that produced `dismissed` comments
@@ -1261,31 +1271,65 @@ sequenceDiagram
   "schema_version": 3,
   "changed_files": ["src/api.ts"],
   "changed_nodes": [
-    {"id": "src/api.ts:15:fetchUser", "kind": "function", "change": "modified"}
+    {
+      "id": "src/api.ts:15:fetchUser",
+      "kind": "function",
+      "change": "modified"
+    }
   ],
   "changed_dependency_edges": [
-    {"source": "src/api.ts:15:fetchUser", "target": "src/db.ts:8:query", "type": "calls", "change": "added"}
+    {
+      "source": "src/api.ts:15:fetchUser",
+      "target": "src/db.ts:8:query",
+      "type": "calls",
+      "change": "added"
+    }
   ],
   "impacted_modules": [
-    {"id": "src/handler.ts:10:handleRequest", "risk": 0.87, "depth": 1, "attention": 0.92},
-    {"id": "src/router.ts:5:routeRequest", "risk": 0.41, "depth": 2, "attention": 0.65}
+    {
+      "id": "src/handler.ts:10:handleRequest",
+      "risk": 0.87,
+      "depth": 1,
+      "attention": 0.92
+    },
+    {
+      "id": "src/router.ts:5:routeRequest",
+      "risk": 0.41,
+      "depth": 2,
+      "attention": 0.65
+    }
   ],
   "blast_radius_score": 67,
   "confidence": "high",
   "risk_anomalies": [
-    {"id": "src/utils.ts:3:formatDate", "embedding_drift": 0.42, "reason": "Return type changed from string to Date"}
+    {
+      "id": "src/utils.ts:3:formatDate",
+      "embedding_drift": 0.42,
+      "reason": "Return type changed from string to Date"
+    }
   ],
   "suggested_reviewers": [
-    {"handle": "alice", "relevance_score": 0.94, "reason": "Owns 3 impacted files, high embedding similarity"},
-    {"handle": "bob", "relevance_score": 0.71, "reason": "CODEOWNERS match + similar code patterns"}
+    {
+      "handle": "alice",
+      "relevance_score": 0.94,
+      "reason": "Owns 3 impacted files, high embedding similarity"
+    },
+    {
+      "handle": "bob",
+      "relevance_score": 0.71,
+      "reason": "CODEOWNERS match + similar code patterns"
+    }
   ],
-  "risks": ["High coupling: fetchUser has 12 direct callers", "Embedding drift in formatDate suggests semantic change"],
+  "risks": [
+    "High coupling: fetchUser has 12 direct callers",
+    "Embedding drift in formatDate suggests semantic change"
+  ],
   "cross_repo_impacts": [
     {
       "repo_id": "uuid",
       "repo_name": "org/frontend-app",
       "impacted_nodes": [
-        {"id": "src/client.ts:20:apiCall", "risk": 0.63, "attention": 0.78}
+        { "id": "src/client.ts:20:apiCall", "risk": 0.63, "attention": 0.78 }
       ],
       "blast_score": 35
     }
@@ -1328,6 +1372,7 @@ sequenceDiagram
 **Supabase extension:** `CREATE EXTENSION IF NOT EXISTS vector` (pgvector for similarity search)
 
 **Docker Compose additions:**
+
 - Worker needs `torch` installed (CPU-only for inference; GPU optional for training)
 - Celery Beat process for periodic model retraining and embedding refresh
 
