@@ -1,5 +1,9 @@
 # Progress Log
 
+- 2026-04-16 23:22 CDT
+  Next steps.
+  Notes: Manually review `artifacts/ranker-compare/ranker-labels.jsonl`, validate whether GraphCodeBERT promotions and drops are actually better, resolve the `unclear` rows first, and use the reviewed labels as the seed dataset for future GraphCodeBERT fine-tuning.
+
 - 2026-04-16 23:15 CDT
   Added ranker labeling workflow and filled the first-pass review labels.
   Notes: Implemented `label-ranker-results`, generated `artifacts/ranker-compare/ranker-labels.jsonl`, and applied an initial `better` / `worse` / `unclear` pass for manual review.
