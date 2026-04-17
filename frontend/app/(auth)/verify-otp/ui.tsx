@@ -4,9 +4,10 @@ import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { OTP_LENGTH, OtpInput } from "@/components/otp-input";
+import { OtpInput } from "@/components/otp-input";
 import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/client";
+import { OTP_LENGTH } from "@/lib/otp-utils";
 
 const RESEND_COOLDOWN_SEC = 60;
 

@@ -1,5 +1,6 @@
 "use client";
 
+import type { Core as CytoscapeCore } from "cytoscape";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -185,7 +186,7 @@ function AstTree({ graph }: { graph: AstGraph }) {
             key={root.id}
             nodeId={root.id}
             nodeMap={nodeMap}
-            children={children}
+            childMap={children}
             depth={0}
           />
         ))}
@@ -220,14 +221,14 @@ function AstGraphView({ graph }: { graph: AstGraph }) {
 
   useEffect(() => {
     let mounted = true;
-    let cytoscapeInstance: any = null;
+    let cytoscapeInstance: CytoscapeCore | null = null;
 
     async function mountGraph() {
       if (!containerRef.current) return;
       try {
-        const module = await import("cytoscape");
+        const cyPkg = await import("cytoscape");
         if (!mounted || !containerRef.current) return;
-        const cytoscape = module.default;
+        const cytoscape = cyPkg.default;
         cytoscapeInstance = cytoscape({
           container: containerRef.current,
           elements,
@@ -245,14 +246,14 @@ function AstGraphView({ graph }: { graph: AstGraph }) {
                 "background-color": "#8fb7ff",
                 label: "data(label)",
                 color: "#e8eefc",
-                "font-size": 9,
+                "font-size": "9px",
                 "text-wrap": "wrap",
-                "text-max-width": 110,
+                "text-max-width": "110px",
                 "text-valign": "center",
                 "text-halign": "center",
-                width: 22,
-                height: 22,
-                "border-width": 1,
+                width: "22px",
+                height: "22px",
+                "border-width": "1px",
                 "border-color": "#d7e3ff",
               },
             },
@@ -261,8 +262,8 @@ function AstGraphView({ graph }: { graph: AstGraph }) {
               style: {
                 "background-color": "#2f6fed",
                 shape: "round-rectangle",
-                width: 44,
-                height: 26,
+                width: "44px",
+                height: "26px",
               },
             },
             {
@@ -281,7 +282,7 @@ function AstGraphView({ graph }: { graph: AstGraph }) {
             {
               selector: "edge",
               style: {
-                width: 1.5,
+                width: "1.5px",
                 "line-color": "#7182aa",
                 "target-arrow-color": "#7182aa",
                 "target-arrow-shape": "triangle",
@@ -292,7 +293,7 @@ function AstGraphView({ graph }: { graph: AstGraph }) {
             {
               selector: 'edge[edgeType = "ast_child"]',
               style: {
-                width: 1.2,
+                width: "1.2px",
               },
             },
           ],
@@ -352,17 +353,17 @@ function formatNodeLabel(node: AstNode): string {
 function AstTreeNode({
   nodeId,
   nodeMap,
-  children,
+  childMap,
   depth,
 }: {
   nodeId: string;
   nodeMap: Map<string, AstNode>;
-  children: Map<string, string[]>;
+  childMap: Map<string, string[]>;
   depth: number;
 }) {
   const node = nodeMap.get(nodeId);
   if (!node) return null;
-  const childIds = children.get(nodeId) ?? [];
+  const childIds = childMap.get(nodeId) ?? [];
   const label = [
     node.name || node.ast_type || node.kind,
     node.kind !== "file" && node.ast_type && node.ast_type !== node.kind ? `(${node.ast_type})` : "",
@@ -386,7 +387,7 @@ function AstTreeNode({
               key={childId}
               nodeId={childId}
               nodeMap={nodeMap}
-              children={children}
+              childMap={childMap}
               depth={depth + 1}
             />
           ))}

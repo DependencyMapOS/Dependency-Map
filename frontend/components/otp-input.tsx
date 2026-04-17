@@ -6,8 +6,6 @@ import { Input } from "@/components/ui/input";
 import { normalizeOtp, OTP_LENGTH } from "@/lib/otp-utils";
 import { cn } from "@/lib/utils";
 
-export { OTP_LENGTH };
-
 export function OtpInput({
   value,
   onChange,
