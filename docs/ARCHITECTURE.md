@@ -114,6 +114,26 @@ Queues and scheduled tasks include:
 - nightly ML training
 - backfill jobs for persisted schema versions
 
+### CPG bridge, analysis planner, and Celery
+
+PR analysis builds a **task graph** in [backend/app/services/analysis_planner.py](backend/app/services/analysis_planner.py) and executes it in [backend/app/worker/tasks.py](backend/app/worker/tasks.py) (`run_analysis_job` / `_execute_task_graph`). The same graph runs **inline** (FastAPI `BackgroundTasks` or synchronous fallback) when `USE_CELERY` is false, or is **enqueued on Celery** when `USE_CELERY` is true.
+
+**Global kill-switch:** `enable_cpg_bridge` in [backend/app/config.py](backend/app/config.py) (environment-driven). When false, the planner behaves as if `cpg_contract_analysis` is `off` and hosted workers will not run `cpg_mining`.
+
+**Org-level settings:** `organizations.settings` JSON (see cross-repo migration) supports:
+
+- `cpg_contract_analysis`: `off` | `stitch_gate` (default) | `always` | `on_migration_or_routes`
+  - `stitch_gate`: CPG tasks only when both frontend and backend router globs match the diff (legacy behavior).
+  - `always`: schedule CPG mining for every analysis (path miner does not depend on the stitch extractor unless the stitch task is also present).
+  - `on_migration_or_routes`: schedule CPG when the stitch gate matches **or** migration / route heuristics fire.
+- Other existing keys (`async_checks_enabled`, stitch globs, etc.) are unchanged.
+
+**Optional tasks:** Nodes marked `optional` in the plan that raise during execution are stored as `skipped` (not `failed`) so downstream tasks can still complete; see `partial_outputs` and `summary_json.cpg_status` on `pr_analyses`.
+
+**Celery-only helper:** `dm.run_cpg_contract_score` in [backend/app/celery_app.py](backend/app/celery_app.py) runs the offline scorer on a worker-local checkout path. It is separate from the main PR task graph but uses the same [backend/cpg_builder/scorer.py](backend/cpg_builder/scorer.py) entrypoint.
+
+**Tarball checkouts:** GitHub archives usually lack `.git`. The worker passes `synthetic_changed_files` (from the GitHub compare file list) into `score_repository` so the path miner still receives a diff-shaped payload without a local git ref.
+
 ## Authentication and Authorization
 
 Authentication is implemented in [backend/app/deps.py](/c:/Users/aroud/OneDrive/Documents/GitHub/Website/Dependency-Map/backend/app/deps.py).

@@ -110,7 +110,10 @@ def _run_analysis_orchestrator(sb: Client, analysis_id: str) -> None:
         }
     ).eq("id", analysis_id).execute()
 
-    summary: dict[str, Any] = {}
+    summary: dict[str, Any] = {
+        "cpg_candidate_count": None,
+        "cpg_surfaced_count": None,
+    }
     partial_outputs: list[dict[str, Any]] = []
     task_graph: dict[str, Any] = {"nodes": [], "edges": []}
     state: dict[str, Any] = {
@@ -157,6 +160,7 @@ def _run_analysis_orchestrator(sb: Client, analysis_id: str) -> None:
         plan = build_analysis_plan(
             list(state.get("changed_files") or []),
             org_settings=oset,
+            cpg_bridge_enabled=settings.enable_cpg_bridge,
         )
         state["summary"]["analysis_mode"] = plan["analysis_mode"]
         task_graph = create_analysis_plan(
@@ -182,11 +186,19 @@ def _run_analysis_orchestrator(sb: Client, analysis_id: str) -> None:
             task_id="intake_scope",
             status="completed",
         )
-        sb.table("pr_analyses").update({"mode": plan["analysis_mode"]}).eq("id", analysis_id).execute()
+        sb.table("pr_analyses").update({"mode": plan["analysis_mode"]}).eq(
+            "id", analysis_id
+        ).execute()
 
         task_graph = _execute_task_graph(sb, analysis_id, repo_id, task_graph, state)
-
-    summary = dict(state.get("summary") or {})
+        summary = dict(state.get("summary") or {})
+        summary["cpg_status"] = _build_cpg_status_summary(
+            task_graph,
+            plan,
+            state,
+            bridge_enabled=settings.enable_cpg_bridge,
+        )
+        state["summary"] = summary
     partial_outputs = list(state.get("partial_outputs") or [])
     counts = summarize_task_graph(task_graph)
     failed_like = counts.get("failed", 0) + counts.get("blocked", 0)
@@ -206,7 +218,9 @@ def _run_analysis_orchestrator(sb: Client, analysis_id: str) -> None:
 
     summary["task_counts"] = counts
     summary["analysis_mode"] = (
-        summary.get("analysis_mode") or state.get("org_settings", {}).get("analysis_mode") or row.get("mode")
+        summary.get("analysis_mode")
+        or state.get("org_settings", {}).get("analysis_mode")
+        or row.get("mode")
     )
     summary["outcome"] = outcome
     sb.table("pr_analyses").update(
@@ -328,9 +342,10 @@ def _execute_task_graph(
                 state["partial_outputs"].append({"task_id": task_id, "reason": "blocked"})
                 progressed = True
                 continue
-            if any(value != "completed" for value in dep_status.values()):
+            if any(value not in {"completed", "skipped"} for value in dep_status.values()):
                 continue
 
+            node_optional = bool(node.get("optional"))
             task_graph = update_task_status(
                 sb,
                 analysis_id=analysis_id,
@@ -365,23 +380,49 @@ def _execute_task_graph(
                 )
             except Exception as exc:
                 log.exception("Task %s failed for analysis %s", task_id, analysis_id)
-                task_graph = update_task_status(
-                    sb,
-                    analysis_id=analysis_id,
-                    task_graph=task_graph,
-                    task_id=task_id,
-                    status="failed",
-                )
-                append_run_event(
-                    sb,
-                    analysis_id=analysis_id,
-                    repo_id=repo_id,
-                    task_id=task_id,
-                    event_type="failed",
-                    error_code=type(exc).__name__,
-                    metadata={"message": str(exc)},
-                )
-                state["partial_outputs"].append({"task_id": task_id, "reason": str(exc)})
+                if node_optional:
+                    task_graph = update_task_status(
+                        sb,
+                        analysis_id=analysis_id,
+                        task_graph=task_graph,
+                        task_id=task_id,
+                        status="skipped",
+                    )
+                    append_run_event(
+                        sb,
+                        analysis_id=analysis_id,
+                        repo_id=repo_id,
+                        task_id=task_id,
+                        event_type="skipped",
+                        error_code=type(exc).__name__,
+                        metadata={"message": str(exc), "optional": True},
+                    )
+                    state["partial_outputs"].append(
+                        {
+                            "task_id": task_id,
+                            "reason": str(exc),
+                            "optional": True,
+                            "status": "skipped",
+                        }
+                    )
+                else:
+                    task_graph = update_task_status(
+                        sb,
+                        analysis_id=analysis_id,
+                        task_graph=task_graph,
+                        task_id=task_id,
+                        status="failed",
+                    )
+                    append_run_event(
+                        sb,
+                        analysis_id=analysis_id,
+                        repo_id=repo_id,
+                        task_id=task_id,
+                        event_type="failed",
+                        error_code=type(exc).__name__,
+                        metadata={"message": str(exc)},
+                    )
+                    state["partial_outputs"].append({"task_id": task_id, "reason": str(exc)})
             progressed = True
     return task_graph
 
@@ -464,15 +505,27 @@ def _task_build_dependency_graph(
         _apply_cross_repo_blast(sb, state)
 
 
-def _task_route_extraction(_sb: Client, _analysis_id: str, _repo_id: str, state: dict[str, Any]) -> None:
+def _task_route_extraction(
+    _sb: Client,
+    _analysis_id: str,
+    _repo_id: str,
+    state: dict[str, Any],
+) -> None:
     changed = list(state.get("changed_files") or [])
     state["route_files"] = [
-        path for path in changed if "/routers/" in path.replace("\\", "/") or "router" in path.lower()
+        path
+        for path in changed
+        if "/routers/" in path.replace("\\", "/") or "router" in path.lower()
     ]
     state["summary"]["route_files_changed"] = state["route_files"]
 
 
-def _task_schema_extraction(_sb: Client, _analysis_id: str, _repo_id: str, state: dict[str, Any]) -> None:
+def _task_schema_extraction(
+    _sb: Client,
+    _analysis_id: str,
+    _repo_id: str,
+    state: dict[str, Any],
+) -> None:
     changed = list(state.get("changed_files") or [])
     state["migration_files"] = [
         path
@@ -491,11 +544,22 @@ def _task_frontend_backend_stitch(
     changed = list(state.get("changed_files") or [])
     frontend = [path for path in changed if path.replace("\\", "/").startswith("frontend/app/")]
     backend = list(state.get("route_files") or [])
-    state["summary"]["stitch_overview"] = {
+    overview: dict[str, Any] = {
         "frontend_candidates": frontend[:20],
         "backend_candidates": backend[:20],
         "enabled": bool(frontend and backend),
     }
+    head_root = state.get("head_root")
+    if head_root and not state.get("degraded_context"):
+        try:
+            from cpg_builder.fusion import build_cpg
+
+            _graph, artifacts = build_cpg(Path(head_root))
+            overview["stitcher_metrics"] = (artifacts.summaries or {}).get("stitcher_metrics") or {}
+        except Exception:
+            log.exception("stitcher metrics probe failed for %s", head_root)
+            overview["stitcher_metrics"] = {}
+    state["summary"]["stitch_overview"] = overview
 
 
 def _task_cpg_mining(sb: Client, analysis_id: str, repo_id: str, state: dict[str, Any]) -> None:
@@ -507,7 +571,36 @@ def _task_cpg_mining(sb: Client, analysis_id: str, repo_id: str, state: dict[str
     from cpg_builder.scorer import score_repository
 
     out_dir = Path(head_root).parent / "cpg-artifacts"
-    artifacts = score_repository(Path(head_root), out_dir)
+    head_path = Path(head_root)
+    changed = list(state.get("changed_files") or [])
+    base_sha = str(state.get("base_sha") or "")
+    head_sha = str(state.get("head_sha") or "")
+    use_git = (head_path / ".git").exists() and base_sha and head_sha
+    try:
+        if use_git:
+            artifacts = score_repository(
+                head_path,
+                out_dir,
+                base=base_sha,
+                head=head_sha,
+            )
+        else:
+            artifacts = score_repository(
+                head_path,
+                out_dir,
+                synthetic_changed_files=changed or None,
+            )
+    except Exception:
+        if use_git and changed:
+            artifacts = score_repository(
+                head_path,
+                out_dir,
+                synthetic_changed_files=changed,
+            )
+        else:
+            raise
+
+    state["summary"]["cpg_diff_source"] = "git" if use_git else "synthetic_changed_files"
     state["cpg_artifacts"] = artifacts
     state["audit_rows"] = list(artifacts.verifier_audit)
     preview = {
@@ -538,14 +631,16 @@ def _task_cpg_mining(sb: Client, analysis_id: str, repo_id: str, state: dict[str
 def _task_path_miner(_sb: Client, _analysis_id: str, _repo_id: str, state: dict[str, Any]) -> None:
     artifacts = state.get("cpg_artifacts")
     if artifacts is None:
-        raise RuntimeError("CPG artifacts missing")
+        state["summary"]["cpg_candidate_count"] = state["summary"].get("cpg_candidate_count") or 0
+        return
     state["summary"]["cpg_candidate_count"] = artifacts.run_metadata.get("candidate_count", 0)
 
 
 def _task_ranker(_sb: Client, _analysis_id: str, _repo_id: str, state: dict[str, Any]) -> None:
     artifacts = state.get("cpg_artifacts")
     if artifacts is None:
-        raise RuntimeError("CPG artifacts missing")
+        state["summary"]["cpg_surfaced_count"] = state["summary"].get("cpg_surfaced_count") or 0
+        return
     state["summary"]["cpg_surfaced_count"] = artifacts.run_metadata.get("surfaced_count", 0)
 
 
@@ -626,7 +721,9 @@ def _apply_cross_repo_blast(sb: Client, state: dict[str, Any]) -> None:
         state["summary"]["aggregate_cross_repo_score"] = 0
         state["summary"]["cross_repo_truncated"] = False
         return
-    max_consumers = int(state["org_settings"].get("max_consumer_repos") or settings.max_consumer_repos)
+    max_consumers = int(
+        state["org_settings"].get("max_consumer_repos") or settings.max_consumer_repos
+    )
     consumers: dict[str, tuple[str, dict[str, Any]]] = {}
     for edge in cross_edges:
         sid = str(edge.get("source_repo_id") or "")
@@ -674,6 +771,81 @@ def _node_status(task_graph: dict[str, Any], task_id: str) -> str:
         if str(node.get("id")) == task_id:
             return str(node.get("status") or "pending")
     return "pending"
+
+
+def _build_cpg_status_summary(
+    task_graph: dict[str, Any],
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    bridge_enabled: bool,
+) -> dict[str, Any]:
+    """Human-facing CPG gate summary for summary_json and UI."""
+    node_by_id = {str(n.get("id")): n for n in task_graph.get("nodes") or []}
+    mining = node_by_id.get("cpg_mining")
+    path_m = node_by_id.get("path_miner")
+    rank = node_by_id.get("ranker")
+    partial = list(state.get("partial_outputs") or [])
+    mining_reason = next(
+        (p for p in partial if isinstance(p, dict) and p.get("task_id") == "cpg_mining"),
+        None,
+    )
+
+    summary = state.get("summary") or {}
+    out: dict[str, Any] = {
+        "mode": "unknown",
+        "reason": "",
+        "planner_reason_json": dict(plan.get("reason_json") or {}),
+        "planner_disabled_subtasks": list(plan.get("disabled_subtasks") or []),
+        "task_status": {
+            "cpg_mining": str(mining.get("status")) if mining else "absent",
+            "path_miner": str(path_m.get("status")) if path_m else "absent",
+            "ranker": str(rank.get("status")) if rank else "absent",
+        },
+        "cpg_candidate_count": summary.get("cpg_candidate_count"),
+        "cpg_surfaced_count": summary.get("cpg_surfaced_count"),
+    }
+
+    if not bridge_enabled:
+        out["mode"] = "skipped_disabled"
+        out["reason"] = "CPG bridge disabled via server configuration (enable_cpg_bridge=false)."
+        return out
+
+    if not mining:
+        out["mode"] = "skipped_planner"
+        out["reason"] = (
+            "CPG tasks were not scheduled (org cpg_contract_analysis gate or planner)."
+        )
+        return out
+
+    mstatus = str(mining.get("status") or "pending")
+    if mstatus == "skipped":
+        out["mode"] = "skipped_runtime"
+        if isinstance(mining_reason, dict):
+            out["reason"] = str(mining_reason.get("reason"))
+        else:
+            out["reason"] = "cpg_mining skipped"
+        return out
+    if mstatus == "failed":
+        out["mode"] = "failed"
+        if isinstance(mining_reason, dict):
+            out["reason"] = str(mining_reason.get("reason"))
+        else:
+            out["reason"] = "cpg_mining failed"
+        return out
+    if mstatus != "completed":
+        out["mode"] = "pending"
+        out["reason"] = f"cpg_mining status={mstatus}"
+        return out
+
+    if not state.get("cpg_artifacts"):
+        out["mode"] = "skipped_no_artifacts"
+        out["reason"] = "cpg_mining completed without persisting scorer artifacts."
+        return out
+
+    out["mode"] = "ran"
+    out["reason"] = "CPG invariant scorer finished for this analysis."
+    return out
 
 
 def _load_analysis(sb: Client, analysis_id: str) -> dict[str, Any] | None:

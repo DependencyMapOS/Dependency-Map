@@ -3,9 +3,9 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
-from app.services.analysis_runs import signed_graph_artifact_metadata
 from app.deps import get_supabase_admin, parse_uuid, verify_user_or_api_key
 from app.limiter import limiter
+from app.services.analysis_runs import signed_graph_artifact_metadata
 from app.supabase_utils import execute_with_schema_check
 from app.worker.tasks import schedule_analysis_job
 

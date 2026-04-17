@@ -46,6 +46,7 @@ Entry point: [backend/app/routers/analyses.py](/c:/Users/aroud/OneDrive/Document
 7. The worker downloads base and head tarballs for the commit range.
 8. The worker builds dependency graphs for both versions.
 9. The worker computes changed files from the GitHub compare API.
+9b. The worker builds a gated task graph (see [Architecture: CPG bridge and org settings](ARCHITECTURE.md#cpg-bridge-analysis-planner-and-celery)) and may run optional CPG contract mining with synthetic diff payloads when tarballs lack `.git`.
 10. The worker runs scoring and blast-radius logic.
 11. The worker may compute cross-repo impact.
 12. The worker persists summaries and derived artifacts.

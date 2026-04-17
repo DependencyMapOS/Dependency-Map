@@ -64,7 +64,9 @@ def update_task_status(
             break
     updated = {"nodes": nodes, "edges": list(task_graph.get("edges") or [])}
     sb.table("pr_analyses").update({"task_graph_state": updated}).eq("id", analysis_id).execute()
-    sb.table("analysis_plans").update({"task_graph_json": updated}).eq("run_id", analysis_id).execute()
+    sb.table("analysis_plans").update({"task_graph_json": updated}).eq(
+        "run_id", analysis_id
+    ).execute()
     return updated
 
 
@@ -180,7 +182,14 @@ def signed_graph_artifact_metadata(artifact: dict[str, Any], sb: Client) -> dict
 
 
 def summarize_task_graph(task_graph: dict[str, Any]) -> dict[str, Any]:
-    counts = {"pending": 0, "in_progress": 0, "completed": 0, "failed": 0, "blocked": 0}
+    counts: dict[str, int] = {
+        "pending": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0,
+    }
     for node in task_graph.get("nodes") or []:
         status = str(node.get("status") or "pending")
         counts[status] = counts.get(status, 0) + 1

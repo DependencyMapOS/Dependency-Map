@@ -315,3 +315,28 @@ def test_prepare_graphcodebert_dataset_filters_unclear_and_splits(
         "high_priority",
         "low_priority",
     }
+
+
+def test_score_repository_accepts_synthetic_changed_files(tmp_path: Path) -> None:
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "frontend" / "page.tsx").write_text(
+        'async function load() { return apiFetchOptional("/v1/orgs/123/repositories"); }\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "backend" / "app" / "routers").mkdir(parents=True)
+    (tmp_path / "backend" / "app" / "routers" / "orgs.py").write_text(
+        "from fastapi import APIRouter\n"
+        'router = APIRouter(prefix="/v1/orgs")\n'
+        '@router.get("/{org_id}/repositories")\n'
+        "def list_org_repositories():\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "score-out"
+    artifacts = score_repository(
+        tmp_path,
+        out_dir,
+        synthetic_changed_files=["frontend/page.tsx"],
+    )
+    assert artifacts.run_id.startswith("score:")
+    assert artifacts.run_metadata.get("candidate_count", 0) >= 0

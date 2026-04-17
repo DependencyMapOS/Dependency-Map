@@ -41,6 +41,15 @@ export default async function AnalysisPage({
   const findingsData = findings.ok && isRecord(findings.data) ? findings.data : null;
   const auditData = audit.ok && isRecord(audit.data) ? audit.data : null;
   const graphData = graph.ok && isRecord(graph.data) ? graph.data : null;
+  const cpgStatus = summary && isRecord(summary.cpg_status) ? (summary.cpg_status as JsonRecord) : null;
+  const disabledSubtasks = asArray(planData?.disabled_subtasks);
+  const cpgArtifact = asArray(graphData?.artifacts).find((item) => {
+    const row = isRecord(item) ? item : {};
+    return row.kind === "base_cpg";
+  });
+  const cpgArtifactRecord = isRecord(cpgArtifact) ? cpgArtifact : null;
+  const cpgDownloadUrl =
+    typeof cpgArtifactRecord?.download_url === "string" ? cpgArtifactRecord.download_url : null;
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 md:px-8">
@@ -80,6 +89,33 @@ export default async function AnalysisPage({
 
           <Card>
             <CardHeader>
+              <CardTitle className="text-base">CPG / contracts</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <OverviewList
+                rows={[
+                  ["Status", stringOrFallback(cpgStatus?.mode)],
+                  ["Reason", stringOrFallback(cpgStatus?.reason)],
+                  ["Diff source", stringOrFallback(summary?.cpg_diff_source)],
+                  ["Candidates", stringOrFallback(summary?.cpg_candidate_count)],
+                  ["Surfaced", stringOrFallback(summary?.cpg_surfaced_count)],
+                ]}
+              />
+              {cpgDownloadUrl ? (
+                <a
+                  href={cpgDownloadUrl}
+                  className="inline-block text-xs font-medium text-primary hover:underline"
+                >
+                  Open base_cpg artifact
+                </a>
+              ) : (
+                <p className="text-xs text-muted-foreground">No base_cpg artifact for this run.</p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle className="text-base">Findings Review</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
@@ -109,6 +145,7 @@ export default async function AnalysisPage({
                   ["Analysis Mode", stringOrFallback(planData?.analysis_mode)],
                 ]}
               />
+              <JsonArraySection title="Disabled subtasks" value={disabledSubtasks} limit={12} />
               <TaskGraphList nodes={asArray((planData?.task_graph_json as JsonRecord | undefined)?.nodes)} />
             </CardContent>
           </Card>
@@ -244,8 +281,11 @@ function TaskGraphList({ nodes }: { nodes: unknown[] }) {
           <div key={index} className="rounded-md border p-3">
             <div className="flex items-center justify-between gap-3">
               <span className="font-medium">{stringOrFallback(node.id)}</span>
-              <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                {stringOrFallback(node.status)}
+              <span className="flex shrink-0 items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+                {node.optional ? (
+                  <span className="rounded border border-dashed px-1.5 py-0.5 normal-case">optional</span>
+                ) : null}
+                <span>{stringOrFallback(node.status)}</span>
               </span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{stringOrFallback(node.reason)}</p>

@@ -4,6 +4,7 @@
   "workspaces": ["frontend"],
   "scripts": {
     "lint": "npm run lint -w frontend",
-    "build": "npm run build -w frontend"
+    "build": "npm run build -w frontend",
+    "ranker:eval": "cd backend && uv run python -m cpg_builder.main compare-rankers --repo .. --out-dir ../artifacts/ranker-compare --base main --head HEAD && uv run python -m cpg_builder.main label-ranker-results --compare-dir ../artifacts/ranker-compare --out ../artifacts/ranker-compare/ranker-labels.jsonl && uv run python scripts/aggregate_ranker_labels.py ../artifacts/ranker-compare/ranker-labels.jsonl"
   }
 }

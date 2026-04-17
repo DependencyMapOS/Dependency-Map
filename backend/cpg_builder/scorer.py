@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from .invariants import InvariantSpec, default_invariants
 from .path_miner import CandidatePath, deserialize_candidate_path, mine_candidate_paths
 from .ranker import RankedCandidate, rank_candidates, ranker_example
 from .reasoner import HostedGemmaReasoner, load_queue_entries
+from .synthetic_diff import synthetic_diff_payload_from_changed_files
 from .verifier import verify_candidate
 
 
@@ -39,6 +41,7 @@ def score_repository(
     cpg_json: Path | None = None,
     diff_json: Path | None = None,
     invariants: list[InvariantSpec] | None = None,
+    synthetic_changed_files: list[str] | None = None,
 ) -> ScoreArtifacts:
     out_dir.mkdir(parents=True, exist_ok=True)
     invariant_specs = invariants or default_invariants()
@@ -48,6 +51,7 @@ def score_repository(
         head=head,
         cpg_json=cpg_json,
         diff_json=diff_json,
+        synthetic_changed_files=synthetic_changed_files,
     )
     candidates = mine_candidate_paths(graph, invariant_specs, diff_payload)
     invariant_map = {spec.id: spec for spec in invariant_specs}
@@ -255,6 +259,7 @@ def _load_analysis_inputs(
     head: str | None,
     cpg_json: Path | None,
     diff_json: Path | None,
+    synthetic_changed_files: list[str] | None = None,
 ) -> tuple[nx.MultiDiGraph, dict[str, Any], dict[str, Any] | None, str, str, str]:
     if cpg_json:
         payload = json.loads(cpg_json.read_text(encoding="utf-8"))
@@ -268,33 +273,41 @@ def _load_analysis_inputs(
         return graph, payload, diff_payload, repo_id, base or "", head or ""
 
     if base and head:
-        changed = changed_files(repo_root, base, head)
-        base_dir = materialize_git_ref(repo_root, base)
-        head_dir = materialize_git_ref(repo_root, head)
         try:
-            _base_graph, base_artifacts = build_cpg(
-                base_dir.name, git_ref=base, repo_identity=repo_root
-            )
-            head_graph, head_artifacts = build_cpg(
-                head_dir.name,
-                git_ref=head,
-                previous_artifacts=base_artifacts,
-                changed_paths=set(changed),
-                repo_identity=repo_root,
-            )
-            diff_payload = {
-                "graph_diff": asdict(diff_artifacts(base_artifacts, head_artifacts)),
-                "changed_files": changed,
-            }
-            payload = graph_payload(head_graph, head_artifacts)
-            return head_graph, payload, diff_payload, head_artifacts.repo_index.repo_id, base, head
-        finally:
-            base_dir.cleanup()
-            head_dir.cleanup()
+            changed = changed_files(repo_root, base, head)
+            base_dir = materialize_git_ref(repo_root, base)
+            head_dir = materialize_git_ref(repo_root, head)
+            try:
+                _base_graph, base_artifacts = build_cpg(
+                    base_dir.name, git_ref=base, repo_identity=repo_root
+                )
+                head_graph, head_artifacts = build_cpg(
+                    head_dir.name,
+                    git_ref=head,
+                    previous_artifacts=base_artifacts,
+                    changed_paths=set(changed),
+                    repo_identity=repo_root,
+                )
+                diff_payload: dict[str, Any] = {
+                    "graph_diff": asdict(diff_artifacts(base_artifacts, head_artifacts)),
+                    "changed_files": changed,
+                }
+                payload = graph_payload(head_graph, head_artifacts)
+                rid = head_artifacts.repo_index.repo_id
+                return head_graph, payload, diff_payload, rid, base, head
+            finally:
+                base_dir.cleanup()
+                head_dir.cleanup()
+        except (FileNotFoundError, OSError, subprocess.SubprocessError, RuntimeError):
+            # Tarball checkouts often lack .git; fall through to head-only + synthetic diff.
+            pass
 
     graph, artifacts = build_cpg(repo_root)
     payload = graph_payload(graph, artifacts)
-    return graph, payload, None, artifacts.repo_index.repo_id, "", ""
+    diff_payload: dict[str, Any] | None = None
+    if synthetic_changed_files:
+        diff_payload = synthetic_diff_payload_from_changed_files(graph, synthetic_changed_files)
+    return graph, payload, diff_payload, artifacts.repo_index.repo_id, "", ""
 
 
 def _graph_from_payload(payload: dict[str, Any]) -> nx.MultiDiGraph:

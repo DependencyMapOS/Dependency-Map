@@ -207,6 +207,13 @@ Use the command on one line:
 uv run --active python -m cpg_builder.main score --repo .. --out-dir ../artifacts/offline-score --base main --head HEAD
 ```
 
+## Organization settings (hosted CPG)
+
+For analyses executed through the FastAPI worker (not the offline CLI alone), org admins can set `organizations.settings` JSON in Supabase. Relevant keys:
+
+- `cpg_contract_analysis`: `off` | `stitch_gate` (default) | `always` | `on_migration_or_routes` — controls when `cpg_mining` is scheduled. See [docs/ARCHITECTURE.md](ARCHITECTURE.md#cpg-bridge-analysis-planner-and-celery).
+- The server-wide `enable_cpg_bridge` flag still overrides this when disabled.
+
 ## Contributor Workflow
 
 Recommended contributor flow:

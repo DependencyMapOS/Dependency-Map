@@ -175,6 +175,16 @@ See **`.env.example`** for the full list. Summary:
 
 Apply migrations in the Supabase SQL editor or via `supabase db push` when using the Supabase CLI.
 
+## Ranker evaluation (one command)
+
+From the repo root (see [docs/REVIEWER_METRIC.md](docs/REVIEWER_METRIC.md) for the full checklist):
+
+```bash
+npm run ranker:eval
+```
+
+This runs `compare-rankers` on `--repo ..` with `--base main` and `--head HEAD`, generates `ranker-labels.jsonl` via `label-ranker-results`, then prints aggregate label metrics. Edit `review_label` in the JSONL before trusting metrics; override refs by running the underlying commands from [docs/MODEL_SETUP.md](docs/MODEL_SETUP.md) instead.
+
 ## CI
 
 From the repo root: `npm install`, `npm run lint`, `npm run build` (web); `cd backend && uv sync --extra dev && uv run ruff check app` (API).

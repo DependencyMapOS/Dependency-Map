@@ -2,6 +2,34 @@
 
 This document defines how contributors should review GraphCodeBERT ranking changes and how to summarize that review into a simple metric.
 
+## Evaluation checklist (Phase 0 loop)
+
+Use this sequence after [docs/MODEL_SETUP.md](MODEL_SETUP.md) environment setup:
+
+1. **Compare rankers** on a fixed `base` / `head` (same SHAs you care about for a PR or experiment):
+
+   `cd backend && uv run python -m cpg_builder.main compare-rankers --repo .. --out-dir ../artifacts/ranker-compare --base <ref> --head <ref>`
+
+2. **Generate the labeling JSONL** (starter rows for human review):
+
+   `uv run python -m cpg_builder.main label-ranker-results --compare-dir ../artifacts/ranker-compare --out ../artifacts/ranker-compare/ranker-labels.jsonl`
+
+3. **Review and set `review_label`** on each row (see [Required Review Labels](#required-review-labels)). Aim for a first batch of at least **30–50** judged rows before trusting aggregate metrics.
+
+4. **Aggregate metrics**:
+
+   `uv run python scripts/aggregate_ranker_labels.py ../artifacts/ranker-compare/ranker-labels.jsonl`
+
+5. **Optional dataset prep** (after labels look sane):
+
+   `uv run python -m cpg_builder.main prepare-graphcodebert-dataset --labels ../artifacts/ranker-compare/ranker-labels.jsonl --out-dir ../artifacts/graphcodebert-dataset`
+
+6. **Optional smoke fine-tune** (validates the training path):
+
+   `uv run python scripts/train_graphcodebert.py --train ../artifacts/graphcodebert-dataset/graphcodebert-train.jsonl --val ../artifacts/graphcodebert-dataset/graphcodebert-val.jsonl --out-dir ../artifacts/graphcodebert-model`
+
+For a one-liner **compare, label file generation, and aggregation** (metrics reflect whatever `review_label` is set to—edit the JSONL after for real review), use `npm run ranker:eval` from the repository root (see root [README.md](../README.md)).
+
 ## Purpose
 
 The goal is to answer one question:
